@@ -1,0 +1,126 @@
+pipeline {
+    agent any
+    tools {
+        jdk 'JDK17'
+        nodejs 'NodeJS23'
+    }
+    environment {
+        SCANNER_HOME = tool 'SonarQube Scanner'
+    }
+    stages {
+        stage("Clean Workspace") {
+            steps {
+                cleanWs()
+            }
+        }
+        stage("Git Checkout") {
+            steps {
+                git 'https://github.com/Balamuruganjeevi/DevOps-Project-Zomato-Kastro.git'
+            }
+        }
+        stage("Sonarqube Analysis") {
+            steps {
+                withSonarQubeEnv('sonarqube-server') {
+                    sh ''' 
+                    $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=zomato \
+                    -Dsonar.projectKey=zomato 
+                    '''
+                }
+            }
+        }
+        stage("Code Quality Gate") {
+            steps {
+                script {
+                    waitForQualityGate abortPipeline: false, credentialsId: 'Sonar-token' 
+                }
+            } 
+        }
+        stage("Install NPM Dependencies") {
+            steps {
+                sh "npm install"
+            }
+        }
+        stage("Trivy File Scan") {
+            steps {
+                sh "trivy fs . > trivy.txt"
+            }
+        }
+        stage("Build Docker Image") {
+            steps {
+                sh "docker build -t balajeevidesh4010/zomato:${BUILD_NUMBER} ."
+            }
+        }
+        stage("Tag & Push to DockerHub") {
+            steps {
+                script {
+                    withDockerRegistry(credentialsId: 'docker-login') {
+                        sh """
+                        docker tag balajeevidesh4010/zomato:${BUILD_NUMBER} balajeevidesh4010/zomato:latest
+                        docker push balajeevidesh4010/zomato:${BUILD_NUMBER}
+                        docker push balajeevidesh4010/zomato:latest
+                        """
+                    }
+                }
+            }
+        }
+        stage("Cleanup Images") {
+            steps {
+                script {
+                    sh '''
+                    docker rmi balajeevidesh4010/zomato:${BUILD_NUMBER}
+                    docker rmi balajeevidesh4010/zomato:latest
+                    '''
+                }
+            }
+        }
+        stage("Docker Scout Image") {
+            steps {
+                script {
+                    sh '''
+                    docker scout quickview balajeevidesh4010/zomato:latest
+                    docker scout cves balajeevidesh4010/zomato:latest
+                    docker scout recommendations balajeevidesh4010/zomato:latest
+                    '''
+                }
+            }
+        }
+        stage("Update Kubernetes Manifests") {
+            steps {
+                sh """
+                git clone https://github.com/Balamuruganjeevi/DevOps-Project-Zomato-Kastro.git
+                cd DevOps-Project-Zomato-Kastro
+                sed -i 's|image: balajeevidesh4010/zomato:.*|image: balajeevidesh4010/zomato:${BUILD_NUMBER} |' Kubernetes/deployment.yaml
+                git config user.name "Jenkins"
+                git config user.email "jenkins@example.com"
+                git add Kubernetes/deployment.yaml
+                git commit -m "Updated deployment image to ${BUILD_NUMBER}"
+                git push https://Balamuruganjeevi:$GITHUB_TOKEN@github.com/Balamuruganjeevi/DevOps-Project-Zomato-Kastro.git master
+                """
+            }
+        }
+    }
+    post {
+        always {
+            emailext attachLog: true,
+                subject: "'${currentBuild.result}'",
+                body: """
+                <html>
+                <body>
+                    <div style="background-color: #FFA07A; padding: 10px; margin-bottom: 10px;">
+                        <p style="color: white; font-weight: bold;">Project: ${env.JOB_NAME}</p>
+                    </div>
+                    <div style="background-color: #90EE90; padding: 10px; margin-bottom: 10px;">
+                        <p style="color: white; font-weight: bold;">Build Number: ${env.BUILD_NUMBER}</p>
+                    </div>
+                    <div style="background-color: #87CEEB; padding: 10px; margin-bottom: 10px;">
+                        <p style="color: white; font-weight: bold;">URL: ${env.BUILD_URL}</p>
+                    </div>
+                </body>
+                </html>
+                """,
+                to: 'balamuruganjeevi4010@gmail.com',
+                mimeType: 'text/html',
+                attachmentsPattern: 'trivy.txt'
+        }
+    }
+}
